@@ -83,6 +83,7 @@ pub async fn init(
     let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, FW).await;
     spawner.spawn(cyw43_task(runner)).unwrap();
     control.init(CLM).await;
+    control.set_power_management(cyw43::PowerManagementMode::None).await;
     info!("cyw43 OK");
 
     // ── embassy-net stack ─────────────────────────────────────────────────────

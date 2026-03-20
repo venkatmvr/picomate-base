@@ -1,6 +1,16 @@
+use std::env;
 use std::fs;
+use std::path::PathBuf;
 
 fn main() {
+    // Copy app memory layout to OUT_DIR/memory.x so the linker finds it.
+    // Named memory-app.x in the workspace root to avoid LLD's current-dir
+    // search picking it up for the bootloader build too.
+    let out = PathBuf::from(env::var("OUT_DIR").unwrap());
+    fs::copy("memory-app.x", out.join("memory.x")).unwrap();
+    println!("cargo:rustc-link-search={}", out.display());
+    println!("cargo:rerun-if-changed=memory-app.x");
+
     println!("cargo:rustc-link-arg-bins=--nmagic");
     println!("cargo:rustc-link-arg-bins=-Tlink.x");
     println!("cargo:rustc-link-arg-bins=-Tlink-rp.x");

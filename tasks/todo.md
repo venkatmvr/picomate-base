@@ -35,13 +35,13 @@
       — button stays GPIO + interrupt (wait_for_any_edge), no PIO needed
 
 ## Phase 3: WiFi
-- [ ] Connect to WiFi (cyw43 + embassy-net, DHCP)
-- [ ] Show IP address on OLED
-- [ ] Verify connectivity (ping from host)
+- [x] Connect to WiFi (cyw43 + embassy-net, DHCP)
+- [x] Show IP address on OLED
+- [~] Verify connectivity (ping from host) — BLOCKED: Mac multi-interface routing issue,
+      see tasks/lessons.md. Both en0/en1 on same subnet; ARP goes wrong interface.
 
-## Phase 4: OTA (picowota)
-- [ ] Add picowota as git submodule
-- [ ] Configure flash partitions (bootloader | active | DFU)
-- [ ] App calls picowota_reboot(true) to enter OTA mode
-- [ ] Axum server serves firmware.bin
-- [ ] End-to-end OTA test: push new version over WiFi
+## Phase 4: OTA
+- [~] ABANDONED for now — see tasks/lessons.md
+      Custom bootloader (direct-jump) + embassy-boot TCP OTA receiver implemented but
+      WiFi OTA unreachable due to Mac routing issue. BOOTSEL flash works fine for dev.
+      Revisit when: router admin access available, or switch to device-initiated (push) model.

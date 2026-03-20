@@ -12,10 +12,11 @@
 use core::cell::RefCell;
 use defmt::*;
 use embassy_boot::BlockingFirmwareUpdater;
-use embassy_boot_rp::{AlignedBuffer, FirmwareUpdaterConfig, WatchdogFlash};
+use embassy_boot_rp::{AlignedBuffer, FirmwareUpdaterConfig};
 use embassy_net::Stack;
 use embassy_net::tcp::TcpSocket;
-use embassy_rp::flash::ERASE_SIZE;
+use embassy_rp::flash::{Blocking, Flash, ERASE_SIZE};
+use embassy_rp::peripherals::FLASH;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_time::Duration;
@@ -23,7 +24,7 @@ use embassy_time::Duration;
 const FLASH_SIZE: usize = 2 * 1024 * 1024;
 const OTA_PORT:   u16   = 4242;
 
-pub type FlashMutex = Mutex<NoopRawMutex, RefCell<WatchdogFlash<'static, FLASH_SIZE>>>;
+pub type FlashMutex = Mutex<NoopRawMutex, RefCell<Flash<'static, FLASH, Blocking, FLASH_SIZE>>>;
 
 /// OTA listener task. Accepts one firmware delivery per connection.
 /// Shared flash mutex is created in main and passed here for 'static lifetime.
