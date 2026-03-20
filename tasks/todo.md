@@ -45,3 +45,7 @@
       Custom bootloader (direct-jump) + embassy-boot TCP OTA receiver implemented but
       WiFi OTA unreachable due to Mac routing issue. BOOTSEL flash works fine for dev.
       Revisit when: router admin access available, or switch to device-initiated (push) model.
+
+## Future Projects Using This Base
+- [ ] **food** — Pico W food/nutrition tracker using picomate-base as template
+      Start: copy picomate-base, strip unused sensors, add food logging UI on OLED
