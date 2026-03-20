@@ -184,19 +184,25 @@ picomate-base/
 - Onboard LED blinks (via CYW43 GPIO 0)
 
 ### Phase 2: Peripherals (each reading shown on OLED)
-| Peripheral | Chip | Bus | Pins |
-|------------|------|-----|------|
-| OLED Display | SSD1315 | I2C0 | SDA=GP16, SCL=GP17 |
-| Push Button | — | GPIO | GP26 |
-| RGB LED | WS2812 | PIO | GP22 |
-| Rotary Encoder | — | GPIO | GP6, GP7 |
-| Buzzer | — | GPIO | GP15 |
-| PIR Motion | AS312 | GPIO | GP18 |
-| IMU | LSM6DS3TR-C | I2C1 | SDA=GP4, SCL=GP5 |
-| Light Sensor | LTR-381RGB-01 | I2C | GP8, GP9 |
-| Magnetometer | MMC5603NJ | I2C | GP12, GP13 |
-| Temp/Humidity | SHT30-DIS | I2C | GP24, GP25 |
-| Microphone | ZTS6531S | I2C | GP0, GP1 |
+
+> **Note — hardware variant:** The DeskPi PicoMate website lists different GPIO assignments
+> than what works on the physical board in testing. The table below shows **verified working pins**.
+> Website-listed pins are noted where they differ. If your board matches the website, adjust the
+> `p.PIN_N` values in `main.rs` accordingly.
+
+| Peripheral | Chip | Bus | Verified Pin | Website Pin |
+|------------|------|-----|-------------|-------------|
+| OLED Display | SSD1315 | I2C0 | SDA=GP16, SCL=GP17 | SPI GP7,10,11 |
+| Push Button | — | GPIO | GP26 | GP14 |
+| RGB LED | WS2812 | PIO1 SM0 | GP22 | GP27 |
+| Rotary Encoder | — | GPIO | GP6 (CLK), GP7 (DT) | GP16, GP17 |
+| Buzzer | — | PWM7B | GP15 | GP15 ✓ |
+| PIR Motion | AS312 | GPIO | GP18 | GP18 ✓ |
+| IMU | LSM6DS3TR-C | I2C1 | SDA=GP4, SCL=GP5 | GP4, GP5 ✓ |
+| Light Sensor | LTR-381RGB-01 | I2C | GP8, GP9 | GP8, GP9 ✓ |
+| Magnetometer | MMC5603NJ | I2C | GP12, GP13 | GP12, GP13 ✓ |
+| Temp/Humidity | SHT30-DIS | I2C | GP24, GP25 | GP24, GP25 ✓ |
+| Microphone | ZTS6531S | I2C | GP0, GP1 | GP0, GP1 ✓ |
 
 ### Phase 3: WiFi
 - Connect with cyw43 + embassy-net
@@ -207,3 +213,122 @@ picomate-base/
 - Flash partitioned: bootloader | active | DFU
 - App calls `picowota_reboot(true)` → enters OTA mode
 - Server pushes new `.bin` over HTTP
+
+---
+ one important question i2c is slower and easier but on pico w we have the wy chip for wifi and all spi communications and if
+that does all spi communications do we route all pio through spi as its faster, or does embassy toolchain capture all
+periperipherals and run all commmunications through spi to the peripherals due to pio and state machines speed
+
+⏺ Great architecture question. Here's the clear answer:
+
+  The CYW43 is NOT a peripheral hub
+
+  The CYW43439 chip is a dedicated WiFi/BT chip. Its SPI connection to the RP2040 is a private link — only for WiFi traffic and
+  its own 3 GPIOs (including the onboard LED). It doesn't know or care about your sensors.
+
+  The actual topology
+
+  RP2040
+  ├── PIO0 SM0 ──SPI──► CYW43439 (WiFi chip only)
+  │
+  ├── PIO1 SM0 ─────►  WS2812 RGB (1-wire, 800kHz precise timing)
+  │
+  ├── I2C0 (GP16/17) ► OLED SSD1315
+  ├── I2C1 (GP4/5)  ► IMU LSM6DS3TR-C
+  │   (GP8/9)       ► Light sensor LTR-381RGB-01
+  │   (GP12/13)     ► Magnetometer MMC5603NJ
+  │   (GP24/25)     ► SHT30 temp/humidity
+  │   (GP0/1)       ► Microphone ZTS6531S
+  │
+  └── GPIO ──────────► Button, Encoder, PIR, Buzzer
+
+  Every peripheral talks directly to the RP2040 over its own bus. Embassy-rp maps each bus to the right hardware driver — nothing
+  is routed through the CYW43.
+
+  Why PIO for WS2812 (not I2C or SPI)?
+
+  PIO is used when hardware peripherals can't meet the timing:
+
+  ┌─────────────┬────────────────────┬───────────────────────────────────────────────────────────────────────────────────────┐
+  │     Bus     │       Speed        │                                       Use case                                        │
+  ├─────────────┼────────────────────┼───────────────────────────────────────────────────────────────────────────────────────┤
+  │ I2C         │ 100–400 kHz        │ Sensors — slow but only 2 wires, many devices share the bus                           │
+  ├─────────────┼────────────────────┼───────────────────────────────────────────────────────────────────────────────────────┤
+  │ SPI         │ up to ~62 MHz      │ Fast bulk data (displays, flash)                                                      │
+  │ hardware    │                    │                                                                                       │
+  ├─────────────┼────────────────────┼───────────────────────────────────────────────────────────────────────────────────────┤
+  │ PIO         │ any arbitrary      │ CYW43 SPI (needs specific framing), WS2812 (800kHz precise pulses), encoders at       │
+  │             │ timing             │ interrupt speed                                                                       │
+  └─────────────┴────────────────────┴───────────────────────────────────────────────────────────────────────────────────────┘
+
+  WS2812 needs bit-perfect 250ns/875ns pulses — I2C and SPI can't produce that protocol. PIO programs a tiny state machine in
+  silicon to generate it exactly.
+
+  Why I2C for all the sensors?
+
+  I2C is the right choice here — not slower for sensors because:
+  - Sensors update at 10–100 Hz (you'd never saturate even 100kHz I2C)
+  - Multiple sensors share 2 wires via addressing — otherwise you'd need 10 SPI chip-selects
+  - All those sensor chips only speak I2C (or I2C + SPI, but we use I2C for wiring simplicity)
+
+  The short answer
+
+  Embassy doesn't centralize anything. Each peripheral owns its bus directly. PIO is used where hardware peripherals can't meet
+  protocol timing — not as a general speedup.
+---
+
+## 12. Lessons Learnt
+
+### L1 — `static_cell` on Cortex-M0+ needs `portable-atomic`
+**Problem:** `static_cell` v2 uses `portable-atomic` internally, which requires compare-and-exchange (CAS). Cortex-M0+ has no hardware CAS.
+**Fix:** Add `portable-atomic = { version = "1", features = ["critical-section"] }` to `Cargo.toml`. This makes `portable-atomic` emulate CAS using a critical section.
+**Don't do:** Add `features = ["critical-section"]` to `static_cell` itself — that feature doesn't exist in v2.
+
+### L2 — `write!` clashes with `defmt::*` glob
+**Problem:** `use defmt::*` imports `defmt::write!`, which shadows `core::write!`. Calling `write!(my_string, ...)` resolves to the defmt version and fails with a type mismatch.
+**Fix:** Use `core::fmt::write(&mut buf, format_args!("...", val))` instead of the `write!` macro when formatting into a `heapless::String`.
+**Don't do:** Import both `defmt::*` and `core::fmt::Write` in the same file if you need `write!` for string formatting.
+
+### L3 — `pio_asm!` is not from `pio-proc` directly
+**Problem:** `pio_proc::pio_asm!` from the user-facing `pio-proc` crate doesn't work with embassy-rp 0.9 — version and type mismatches with `pio-core`.
+**Fix:** Import the macro that embassy-rp re-exports: `use embassy_rp::pio::program::pio_asm;`. This is how `cyw43-pio` uses it internally.
+**Don't do:** Add `pio-proc` or `pio` as direct dependencies — embassy-rp vendors the right versions internally.
+
+### L4 — PIO pins need `Peri<'d, impl PioPin + 'd>` wrapper (embassy-rp 0.9)
+**Problem:** `make_pio_pin` expects `Peri<'d, impl PioPin + 'd>`. Passing `impl PioPin` fails because `Peri<'_, PIN_N>` doesn't implement `PioPin` — the inner type does.
+**Fix:** Function signatures that receive a pin for PIO use must take `Peri<'d, impl PioPin + 'd>`. Import with `use embassy_rp::Peri;`. At the call site, pass `p.PIN_N` directly — it's already `Peri<'_, PIN_N>`.
+**Don't do:** Use `impl PioPin` in a function that calls `make_pio_pin` — it won't accept the peripheral wrapper.
+
+### L5 — PIO state machine needs `mut` to configure
+**Problem:** `sm.set_config()` and `sm.set_enable()` take `&mut self`, so the `StateMachine` parameter must be `mut`.
+**Fix:** Declare `mut sm0: StateMachine<'d, PIO1, 0>` in the function parameter.
+
+### L6 — PIO1 interrupt must be bound when using two PIO blocks
+**Problem:** CYW43 uses PIO0. Adding WS2812 on PIO1 without binding `PIO1_IRQ_0` causes the async `wait_push` to hang (no interrupt to wake the task).
+**Fix:** Add `PIO1_IRQ_0 => InterruptHandler<PIO1>` to the `bind_interrupts!` block. Both PIO0 and PIO1 bindings can coexist in the same `Irqs` struct.
+
+### L10 — PIR AS312: always use Pull::Down, not Pull::None
+**Problem:** AS312 output is open-drain on some variants. With `Pull::None` the pin floats when idle → reads HIGH randomly → always shows "Motion!" regardless of actual motion.
+**Fix:** Use `Pull::Down` so the line is actively pulled LOW when the sensor isn't driving it HIGH.
+**Don't do:** Assume push-pull output on PIR sensors — use `Pull::Down` as the safe default for any active-high open-drain sensor.
+
+### L11 — I2C sensors (temp, IMU, light, mag, mic) are not GPIO — they need separate implementation
+**Problem:** Adding a GPIO `Input` for a sensor address won't work for I2C devices. Each sensor (SHT30, LSM6DS3, LTR-381, MMC5603, ZTS6531) needs:
+  1. A dedicated I2C bus init (`I2c::new_async` or `new_blocking`)
+  2. A crate or manual register reads for that sensor's protocol
+  3. Slow polling is fine (1–10 Hz) — sensors don't need fast sampling
+**How to apply:** Each I2C sensor gets its own `src/<sensor>.rs` module. Share the I2C bus using `embassy_rp::i2c::I2c` with address-based multiplexing (no extra hardware needed — I2C supports multiple devices per bus).
+
+### L9 — PIO side-set pins must be explicitly set to output direction
+**Problem:** `make_pio_pin` hands the GPIO to PIO control but leaves direction as input. Side-set writes silently do nothing — the LED stays dark with no error.
+**Fix:** After `sm.set_config(&cfg)`, call `sm.set_pin_dirs(Direction::Out, &[&pin])` before `set_enable(true)`. The embassy-rp docs on `use_program` say this explicitly (line 718 of pio/mod.rs).
+**Don't do:** Assume `make_pio_pin` or `use_program` sets the direction — it doesn't.
+
+### L8 — `U24F8` clock divider holds the *divider value*, not raw frequencies
+**Problem:** `U24F8::from_num(125_000_000u32)` panics — U24F8 (24 integer bits) can only hold up to 16,777,215. Dividing two overflow values produces garbage or a panic, causing a hang with OLED stuck at the last message before the panic.
+**Fix:** Set the divider value directly using bit layout: `U24F8::from_bits((integer << 8) | (frac_256))`. For 125 MHz / 8 MHz = 15.625: `U24F8::from_bits((15u32 << 8) | 160u32)`.
+**Don't do:** Pass raw MHz frequencies into `from_num` — the field represents the *divider* (range 1–65535), not frequencies.
+
+### L7 — Store the `Pin<'d, PIO>` returned by `make_pio_pin`
+**Problem:** `make_pio_pin` returns a `Pin<'d, PIO>` that configures the GPIO for PIO use. If it's dropped at the end of `new()`, it may release the GPIO from PIO control.
+**Fix:** Store it in the struct as `_pin: embassy_rp::pio::Pin<'d, PIO1>`. The leading `_` suppresses dead-code warnings while keeping the value alive.
