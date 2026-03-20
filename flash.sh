@@ -74,16 +74,9 @@ flash_elf() {
   echo "==> Done. Pico W rebooting."
 }
 
-make_combined_uf2() {
-  local out="target/${TARGET}/release/combined.uf2"
-  echo "==> Creating combined UF2 (bootloader + app)..."
-  elf2uf2-rs "${BL_ELF}" target/${TARGET}/release/${BL_BIN}.uf2
-  elf2uf2-rs "${APP_ELF}" target/${TARGET}/release/${APP_BIN}.uf2
-  cat target/${TARGET}/release/${BL_BIN}.uf2 \
-      target/${TARGET}/release/${APP_BIN}.uf2 > "${out}"
-  echo "    Combined: $(ls -lh "${out}" | awk '{print $5}') → ${out}"
-  echo "${out}"
-}
+COMBINED_UF2="target/${TARGET}/release/combined.uf2"
+BL_UF2="target/${TARGET}/release/${BL_BIN}.uf2"
+APP_UF2="target/${TARGET}/release/${APP_BIN}.uf2"
 
 send_ota() {
   local ip="${1:-${OTA_IP}}"
@@ -137,11 +130,14 @@ case "${cmd}" in
     ;;
   combined)
     build_all
-    uf2=$(make_combined_uf2)
+    echo "==> Creating combined UF2 (bootloader + app)..."
+    elf2uf2-rs "${BL_ELF}"  "${BL_UF2}"
+    elf2uf2-rs "${APP_ELF}" "${APP_UF2}"
+    cat "${BL_UF2}" "${APP_UF2}" > "${COMBINED_UF2}"
+    echo "    $(ls -lh "${COMBINED_UF2}" | awk '{print $5}') → ${COMBINED_UF2}"
     wait_for_bootsel
     echo "==> Flashing combined image..."
-    # elf2uf2-rs -d doesn't accept .uf2 directly; use cp to the volume
-    cp "${uf2}" "${BOOTSEL_VOLUME}/"
+    cp "${COMBINED_UF2}" "${BOOTSEL_VOLUME}/"
     echo "==> Done. Pico W rebooting into bootloader → app."
     ;;
   ota)
