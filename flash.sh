@@ -137,8 +137,16 @@ case "${cmd}" in
     echo "    $(ls -lh "${COMBINED_UF2}" | awk '{print $5}') → ${COMBINED_UF2}"
     wait_for_bootsel
     echo "==> Flashing combined image..."
-    cp "${COMBINED_UF2}" "${BOOTSEL_VOLUME}/"
-    echo "==> Done. Pico W rebooting into bootloader → app."
+    # -X: skip extended attributes — macOS tries to write them after the UF2 is
+    # received, but the Pico reboots immediately, making the volume disappear.
+    # If the volume is gone after cp exits, the copy succeeded.
+    cp -X "${COMBINED_UF2}" "${BOOTSEL_VOLUME}/" 2>/dev/null || {
+        if [ ! -d "${BOOTSEL_VOLUME}" ]; then
+            echo "==> Done. Pico W rebooted — bootloader + app flashed."
+        else
+            echo "ERROR: copy failed and volume is still mounted." >&2; exit 1
+        fi
+    }
     ;;
   ota)
     build_app
