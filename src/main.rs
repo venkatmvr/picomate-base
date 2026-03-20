@@ -145,7 +145,7 @@ async fn main(spawner: Spawner) {
             let mut line2: String<24> = String::new();
             core::fmt::write(
                 &mut line2,
-                format_args!("Btn:{} {}", if pressed { "On " } else { "Off" }, pir.state_str()),
+                format_args!("Btn:{} PIR:{}", if pressed { "On " } else { "Off" }, pir.state_str()),
             ).ok();
 
             let mut line3: String<24> = String::new();

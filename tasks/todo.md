@@ -12,13 +12,20 @@
 - [x] WS2812 RGB LED (GP22, via PIO) — cycle colors
 - [x] Rotary Encoder (GP6, GP7) — show count ±
 - [ ] Buzzer (GP15) — beep on button press
-- [~] PIR Motion (AS312, GP18) — GPIO/code correct, stuck LOW; needs hardware verify
-      (check power rail, wait 60s warm-up, try slow close-range movement)
+- [~] PIR Motion (AS312, GP18) — see Bugs
 - [ ] IMU LSM6DS3TR-C (I2C1, GP4/GP5) — show accel X/Y/Z
 - [ ] Light Sensor LTR-381RGB-01 (I2C, GP8/GP9) — show lux
 - [ ] Magnetometer MMC5603NJ (I2C, GP12/GP13) — show heading
 - [ ] Temp/Humidity SHT30-DIS (I2C, GP24/GP25) — show temp °C + RH%
 - [ ] Microphone ZTS6531S (I2C, GP0/GP1) — show sound level
+
+## Bugs
+- [ ] PIR AS312 (GP18) stuck LOW permanently — confirmed Pull::Down, waited 60s+ warm-up,
+      tried slow movement at close range. Code/GPIO correct; suspect:
+      a) board power rail not enabling sensor
+      b) hardware fault on this unit
+      c) pin assignment wrong for this board variant
+      Needs: multimeter on GP18 during movement, check sensor VCC pin
 
 ## Phase 2.5: Input Responsiveness (post WiFi+OTA)
 - [ ] Drop main tick to 10ms (Level 1 fix) — encoder/button poll at 100Hz
