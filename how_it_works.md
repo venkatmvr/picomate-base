@@ -11,21 +11,40 @@ The Pico W is an **RP2040** microcontroller (dual-core ARM Cortex-M0+) with a **
 
 ## 2. `memory.x` — Flash/RAM Map
 
+**With OTA bootloader (current layout):**
+
+```
+Address       Size    Region
+0x10000000    32KB    Bootloader  (embassy-boot-rp binary, flashed once)
+0x10008000     4KB    STATE       (swap flags — written by bootloader + app)
+0x10009000   512KB    ACTIVE      (your running app — FLASH in memory.x)
+0x10089000   516KB    DFU         (staging area for incoming OTA firmware)
+```
+
 ```
 MEMORY {
-    BOOT2 : ORIGIN = 0x10000000, LENGTH = 0x100      ← 256 bytes
-    FLASH : ORIGIN = 0x10000100, LENGTH = 2048K - 0x100
+    BOOT2 : ORIGIN = 0x10000000, LENGTH = 0x100
+    FLASH : ORIGIN = 0x10009000, LENGTH = 512K   ← app lives here
     RAM   : ORIGIN = 0x20000000, LENGTH = 256K
 }
+
+__bootloader_state_start  = 0x10008000;
+__bootloader_state_end    = 0x10009000;
+__bootloader_active_start = 0x10009000;
+__bootloader_active_end   = 0x10009000 + 512K;
+__bootloader_dfu_start    = 0x10089000;
+__bootloader_dfu_end      = 0x10089000 + 512K + 4K;
 ```
 
 The linker uses this to assign your code/data to physical addresses:
 
 | Region | What lives here |
 |--------|----------------|
-| `BOOT2` | 256-byte second-stage bootloader (provided by `embassy-rp`). Configures flash XIP mode so the chip can read code from flash after reset. |
-| `FLASH` | Your compiled binary — `.text` (code), `.rodata` (constants like the CYW43 firmware blobs). |
-| `RAM` | Stack, `.bss` (zero-initialized statics), `.data` (initialized statics), and the async executor's task memory. |
+| `BOOT2` | 256-byte second-stage bootloader (from `embassy-rp`). Configures flash XIP so the chip can read code after reset. |
+| `FLASH` (ACTIVE) | Your compiled binary — `.text` (code), `.rodata` (constants, CYW43 firmware blobs). |
+| `STATE` | 4KB sector holding swap-state flags. The bootloader writes here before and after a DFU swap so a power failure mid-copy is recoverable. |
+| `DFU` | New firmware written here over WiFi. Bootloader copies DFU→ACTIVE on next reset if STATE says swap is pending. |
+| `RAM` | Stack, `.bss`, `.data`, executor task memory. |
 
 Without `memory.x`, the linker doesn't know where to put anything and fails.
 
@@ -208,73 +227,12 @@ picomate-base/
 - Connect with cyw43 + embassy-net
 - Show IP on OLED
 
-### Phase 4: OTA (picowota)
-- picowota submodule as bootloader
-- Flash partitioned: bootloader | active | DFU
-- App calls `picowota_reboot(true)` → enters OTA mode
-- Server pushes new `.bin` over HTTP
+### Phase 4: OTA (embassy-boot-rp)
+- `bootloader/` crate: embassy-boot-rp BootLoader, WatchdogFlash → jumps to ACTIVE
+- App calls `mark_updated()` → reset → bootloader swaps DFU→ACTIVE
+- App calls `mark_booted()` on startup → confirms firmware good (enables rollback)
+- Host sends `.bin` over TCP:4242 via `./flash.sh ota [ip]`
 
----
- one important question i2c is slower and easier but on pico w we have the wy chip for wifi and all spi communications and if
-that does all spi communications do we route all pio through spi as its faster, or does embassy toolchain capture all
-periperipherals and run all commmunications through spi to the peripherals due to pio and state machines speed
-
-⏺ Great architecture question. Here's the clear answer:
-
-  The CYW43 is NOT a peripheral hub
-
-  The CYW43439 chip is a dedicated WiFi/BT chip. Its SPI connection to the RP2040 is a private link — only for WiFi traffic and
-  its own 3 GPIOs (including the onboard LED). It doesn't know or care about your sensors.
-
-  The actual topology
-
-  RP2040
-  ├── PIO0 SM0 ──SPI──► CYW43439 (WiFi chip only)
-  │
-  ├── PIO1 SM0 ─────►  WS2812 RGB (1-wire, 800kHz precise timing)
-  │
-  ├── I2C0 (GP16/17) ► OLED SSD1315
-  ├── I2C1 (GP4/5)  ► IMU LSM6DS3TR-C
-  │   (GP8/9)       ► Light sensor LTR-381RGB-01
-  │   (GP12/13)     ► Magnetometer MMC5603NJ
-  │   (GP24/25)     ► SHT30 temp/humidity
-  │   (GP0/1)       ► Microphone ZTS6531S
-  │
-  └── GPIO ──────────► Button, Encoder, PIR, Buzzer
-
-  Every peripheral talks directly to the RP2040 over its own bus. Embassy-rp maps each bus to the right hardware driver — nothing
-  is routed through the CYW43.
-
-  Why PIO for WS2812 (not I2C or SPI)?
-
-  PIO is used when hardware peripherals can't meet the timing:
-
-  ┌─────────────┬────────────────────┬───────────────────────────────────────────────────────────────────────────────────────┐
-  │     Bus     │       Speed        │                                       Use case                                        │
-  ├─────────────┼────────────────────┼───────────────────────────────────────────────────────────────────────────────────────┤
-  │ I2C         │ 100–400 kHz        │ Sensors — slow but only 2 wires, many devices share the bus                           │
-  ├─────────────┼────────────────────┼───────────────────────────────────────────────────────────────────────────────────────┤
-  │ SPI         │ up to ~62 MHz      │ Fast bulk data (displays, flash)                                                      │
-  │ hardware    │                    │                                                                                       │
-  ├─────────────┼────────────────────┼───────────────────────────────────────────────────────────────────────────────────────┤
-  │ PIO         │ any arbitrary      │ CYW43 SPI (needs specific framing), WS2812 (800kHz precise pulses), encoders at       │
-  │             │ timing             │ interrupt speed                                                                       │
-  └─────────────┴────────────────────┴───────────────────────────────────────────────────────────────────────────────────────┘
-
-  WS2812 needs bit-perfect 250ns/875ns pulses — I2C and SPI can't produce that protocol. PIO programs a tiny state machine in
-  silicon to generate it exactly.
-
-  Why I2C for all the sensors?
-
-  I2C is the right choice here — not slower for sensors because:
-  - Sensors update at 10–100 Hz (you'd never saturate even 100kHz I2C)
-  - Multiple sensors share 2 wires via addressing — otherwise you'd need 10 SPI chip-selects
-  - All those sensor chips only speak I2C (or I2C + SPI, but we use I2C for wiring simplicity)
-
-  The short answer
-
-  Embassy doesn't centralize anything. Each peripheral owns its bus directly. PIO is used where hardware peripherals can't meet
-  protocol timing — not as a general speedup.
 ---
 
 ## 12. Lessons Learnt
@@ -332,3 +290,144 @@ periperipherals and run all commmunications through spi to the peripherals due t
 ### L7 — Store the `Pin<'d, PIO>` returned by `make_pio_pin`
 **Problem:** `make_pio_pin` returns a `Pin<'d, PIO>` that configures the GPIO for PIO use. If it's dropped at the end of `new()`, it may release the GPIO from PIO control.
 **Fix:** Store it in the struct as `_pin: embassy_rp::pio::Pin<'d, PIO1>`. The leading `_` suppresses dead-code warnings while keeping the value alive.
+
+---
+
+## 13. The CYW43 Is Not a Peripheral Hub
+
+The CYW43439 is a **dedicated WiFi chip**. Its SPI link to the RP2040 is private — only for WiFi traffic and its own 3 GPIOs (including the onboard LED). Every other peripheral talks directly to the RP2040 over its own bus.
+
+```
+RP2040
+├── PIO0 SM0 ──SPI──► CYW43439 (WiFi only)
+├── PIO1 SM0 ─────►  WS2812 RGB (800kHz 1-wire, needs PIO timing precision)
+├── I2C0 (GP16/17) ► OLED SSD1315
+├── I2C1 (GP4/5)   ► IMU, Light, Mag, Temp, Mic sensors (all share bus by I2C address)
+└── GPIO ──────────► Button, Encoder, PIR, Buzzer (PWM)
+```
+
+**Why PIO for WS2812 and not hardware SPI?**
+WS2812 needs bit-perfect 250 ns / 875 ns pulses with a custom 1-wire protocol — hardware SPI can't produce that. PIO programs a tiny state machine in silicon to hit the timing exactly.
+
+**Why I2C for sensors and not SPI?**
+Sensors update at 10–100 Hz — even 100 kHz I2C has headroom to spare. More importantly, many sensors share 2 wires via I2C addressing; SPI would need a chip-select pin per device.
+
+**Embassy doesn't centralize anything.** Each bus goes directly to its peripheral. PIO is used only where hardware peripherals can't meet protocol timing.
+
+---
+
+## 14. Why Embassy Over RTOS or Bare-Metal Async
+
+| Approach | What you get | What you build yourself |
+|---|---|---|
+| FreeRTOS (C) | Thread scheduler, queues | Rust FFI bindings, RP2040 port, WiFi driver |
+| Bare async (smoltcp) | TCP stack | Executor, timer driver, all HAL abstractions |
+| **Embassy** | Executor, timer, full HAL, CYW43 driver, TCP stack | Your application |
+
+Embassy's `async/await` maps naturally to embedded. A task waiting for a timer or TCP packet **yields the CPU** — no busy-wait, no thread context switch overhead. The compiler generates the state machines at compile time. No heap, no OS.
+
+The result: `wifi.join(ssid, opts).await` just works. You write application code, not infrastructure.
+
+---
+
+## 15. Why embassy-boot-rp and Not picowota
+
+**picowota** (`usedbytes/picowota`) is a C/CMake project. It cannot be a Cargo dependency. Using it from a Rust project would mean:
+- Two build systems (CMake + Cargo) with separate toolchains
+- The bootloader embeds the full CYW43 WiFi firmware **a second time** (~300 KB wasted)
+- Your app must be linked to picowota's C SDK flash layout
+- No rollback protection
+
+**embassy-boot-rp** is the Rust-native equivalent — a 30-line binary that does one job: check if there's a pending firmware swap, do it atomically, jump to the app. WiFi lives in your app, not the bootloader. Rollback is built in.
+
+---
+
+## 16. How OTA Works End-to-End
+
+```
+NORMAL BOOT
+  Power on
+    → bootloader (0x10000000): reads STATE — empty → jump to ACTIVE (0x10009000)
+    → app starts: mark_booted() confirms this firmware is good
+    → OTA task listens on TCP:4242
+
+OTA UPDATE
+  Developer: ./flash.sh ota 192.168.1.180
+    → builds app → rust-objcopy → raw .bin
+    → Python: connect TCP:4242 → send [4-byte size][binary bytes]
+
+  App (ota_task):
+    → receives bytes in 4KB chunks → BlockingFirmwareUpdater::write_firmware(offset, chunk)
+    → all bytes written → mark_updated() → writes SWAP_PENDING to STATE partition
+    → sys_reset()
+
+  Bootloader (next boot):
+    → reads STATE = SWAP_PENDING
+    → copies DFU → ACTIVE sector by sector (4KB at a time)
+    → after each sector: updates STATE with progress marker (power-fail safe)
+    → STATE = SWAP_DONE → jump to new ACTIVE app
+
+  New app (first boot after update):
+    → mark_booted() → STATE = CONFIRMED
+    → if it crashes before mark_booted(): watchdog fires → bootloader sees UNCONFIRMED
+      → rolls back: copies old ACTIVE backup → restores previous working firmware
+```
+
+**Power-fail safety:** The bootloader's STATE machine uses a progress marker per sector. If power is cut mid-copy, it resumes from where it left off on next boot.
+
+**Rollback:** WatchdogFlash starts an 8s watchdog in the bootloader. Your app has 30s (WatchdogFlash timeout in app) to call `mark_booted()`. A bad update that crashes loops → watchdog → restore.
+
+### flash.sh Commands
+
+```bash
+./flash.sh combined   # ONE TIME: BOOTSEL flash bootloader + app together
+./flash.sh ota        # EVERY UPDATE: WiFi, no USB — defaults to 192.168.1.180
+./flash.sh ota <ip>   # OTA to a specific IP
+./flash.sh            # Dev shortcut: BOOTSEL flash app directly (skips bootloader)
+./flash.sh build      # Build everything without flashing
+./flash.sh bootloader # Re-flash just the bootloader via BOOTSEL
+```
+
+---
+
+## 17. Lessons Learnt — WiFi and OTA (L12–L18)
+
+### L12 — `Peri<'static, T>` is what `p.PINx` gives you
+**Problem:** Writing module functions that accept bare `PIN_23` type fails — `p.PIN_23` from `embassy_rp::init()` is actually `Peri<'static, PIN_23>`.
+**Fix:** Function signatures that receive peripherals must use `Peri<'static, T>` (or `Peri<'d, T>` with the right lifetime). At the call site, pass `p.PIN_23` directly.
+**Don't do:** Accept `PIN_23` (the raw ZST) in a function — you can't pass `p.PIN_23` to it.
+
+### L13 — Match embassy-net version to embassy-time version
+**Problem:** embassy-net 0.6.0 requires embassy-time 0.4.0; embassy-net 0.8.0 requires embassy-time 0.5.0. Mixing versions causes dependency resolution failures.
+**Fix:** Check `embassy-net`'s Cargo.toml for its `embassy-time` version requirement before adding it. For embassy-rp 0.9.0 + embassy-time 0.5.0, use **embassy-net 0.8.0**.
+
+### L14 — `cyw43::ControlError` does not implement `defmt::Format`
+**Problem:** `warn!("failed: {:?}", e)` where `e: ControlError` fails to compile — `ControlError` has no `defmt::Format` impl.
+**Fix:** Log without the error value: `warn!("WiFi join failed, retrying...")`. Detailed error info is in the variant but not exposed via defmt.
+
+### L15 — `Ipv4Address::octets()` not `as_bytes()`
+**Problem:** smoltcp's `Ipv4Address` (re-exported by embassy-net) is a type alias for `core::net::Ipv4Addr`. It has `.octets() -> [u8; 4]`, not `.as_bytes()`.
+**Fix:** `let o = ip.octets(); format!("{}.{}.{}.{}", o[0], o[1], o[2], o[3])`.
+
+### L16 — `FirmwareUpdaterConfig::from_linkerfile_blocking` takes `&Mutex<NoopRawMutex, RefCell<Flash>>`
+**Problem:** The API doesn't take raw flash or `&mut Flash` — it takes a shared mutex wrapper so partitions can be accessed concurrently.
+**Fix:**
+```rust
+let flash = WatchdogFlash::<FLASH_SIZE>::start(p.FLASH, p.WATCHDOG, timeout);
+let mutex = Mutex::<NoopRawMutex, _>::new(RefCell::new(flash));
+let config = FirmwareUpdaterConfig::from_linkerfile_blocking(&mutex, &mutex);
+```
+Both DFU and STATE partitions can share the same mutex because `BlockingPartition` addresses non-overlapping regions.
+
+### L17 — WatchdogFlash / FlashMutex must be created once, outside the accept loop
+**Problem:** Creating `WatchdogFlash::start(flash, watchdog, ...)` inside a loop moves `flash` and `watchdog` on the first iteration — the second iteration fails to compile with "use of moved value".
+**Fix:** Create `WatchdogFlash` once before the loop and wrap it in a `StaticCell<Mutex>` so both startup (`mark_booted`) and the OTA task can share it.
+
+### L18 — `BootLoaderConfig::from_linkerfile_blocking` needs all 6 linker symbols
+**Problem:** Using only `__bootloader_state_*` and `__bootloader_dfu_*` symbols causes a link error — the function also requires `__bootloader_active_start` and `__bootloader_active_end`.
+**Fix:** Define all 6 symbols in both `memory.x` (app) and `bootloader/memory.x`:
+```
+__bootloader_state_start  __bootloader_state_end
+__bootloader_active_start __bootloader_active_end
+__bootloader_dfu_start    __bootloader_dfu_end
+```
