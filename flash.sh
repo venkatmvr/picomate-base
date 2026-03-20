@@ -57,6 +57,7 @@ wait_for_bootsel() {
   done
   echo ""
   echo "  Pico W detected in BOOTSEL mode."
+  sleep 1  # allow macOS to fully mount the volume
 }
 
 flash() {
