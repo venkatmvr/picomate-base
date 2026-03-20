@@ -47,6 +47,11 @@ use {defmt_rtt as _, panic_probe as _};
 
 const FLASH_SIZE: usize = 2 * 1024 * 1024;
 
+// ── Change this to prove an OTA update worked ─────────────────────────────────
+// Flash v1.0 via `./flash.sh combined`, then change to "2.0" and run `./flash.sh ota`.
+// If the OLED version changes — OTA works.
+const APP_VERSION: &str = "1.0";
+
 // Flash mutex shared between mark_booted (startup) and ota_task (runtime).
 use ota::FlashMutex;
 static FLASH_MUTEX: StaticCell<FlashMutex> = StaticCell::new();
@@ -92,14 +97,16 @@ async fn main(spawner: Spawner) {
         .into_buffered_graphics_mode();
     display.init().unwrap();
     let style = oled::make_style();
-    oled::print(&mut display, style, &["PicoMate v1", "WiFi..."]);
+    let mut hdr: String<16> = String::new();
+    core::fmt::write(&mut hdr, format_args!("PicoMate v{}", APP_VERSION)).ok();
+    oled::print(&mut display, style, &[hdr.as_str(), "WiFi..."]);
 
     // ── WiFi (PIO0 SM0, GP23/24/25/29 + DMA0) ────────────────────────────────
     let mut wifi = wifi::init(
         &spawner,
         p.PIN_23, p.PIN_25, p.PIO0, p.PIN_24, p.PIN_29, p.DMA_CH0,
     ).await;
-    oled::print(&mut display, style, &["PicoMate v1", "WiFi OK", wifi.ip.as_str(), "Init..."]);
+    oled::print(&mut display, style, &[hdr.as_str(), "WiFi OK", wifi.ip.as_str(), "Init..."]);
 
     // ── OTA listener (TCP :4242, background) ─────────────────────────────────
     spawner.spawn(ota_task(wifi.stack, flash)).unwrap();
@@ -125,7 +132,7 @@ async fn main(spawner: Spawner) {
     let mut rgb = rgb::Ws2812::new(&mut pio1.common, pio1.sm0, p.PIN_22);
 
     info!("all init done — OTA listening on :4242");
-    oled::print(&mut display, style, &["PicoMate v1", "Ready", wifi.ip.as_str(), "OTA:4242"]);
+    oled::print(&mut display, style, &[hdr.as_str(), "Ready", wifi.ip.as_str(), "OTA:4242"]);
 
     // ── Main loop: 100 ms tick ────────────────────────────────────────────────
     let mut tick: u32 = 0;
@@ -161,7 +168,7 @@ async fn main(spawner: Spawner) {
                 format_args!("Enc:{:+} RGB:{}", enc_count, hue),
             ).ok();
             oled::print(&mut display, style, &[
-                "PicoMate v1",
+                hdr.as_str(),
                 line2.as_str(),
                 line3.as_str(),
                 wifi.ip.as_str(),
